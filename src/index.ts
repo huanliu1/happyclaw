@@ -2142,6 +2142,94 @@ export function collectMessageImages(
  * rapid-fire messages to be piped in without spawning a new container.
  */
 
+// ===================== Thread Session LRU Manager =====================
+
+const DEFAULT_MAX_THREAD_SESSIONS = 50;
+const DEFAULT_THREAD_IDLE_MS = 30 * 60 * 1000; // 30 min
+
+class ThreadSessionManager {
+  private maxSessions: number;
+  private idleMs: number;
+  /** threadKey → last activity timestamp */
+  private lastActivity = new Map<string, number>();
+
+  constructor(maxSessions = DEFAULT_MAX_THREAD_SESSIONS, idleMs = DEFAULT_THREAD_IDLE_MS) {
+    this.maxSessions = maxSessions;
+    this.idleMs = idleMs;
+  }
+
+  /** Register or refresh a thread session */
+  touch(threadKey: string): void {
+    this.lastActivity.set(threadKey, Date.now());
+  }
+
+  /** Remove a thread session (e.g. /unbind) */
+  remove(threadKey: string): void {
+    this.lastActivity.delete(threadKey);
+  }
+
+  /**
+   * Evict idle + over-capacity sessions.
+   * Returns the list of evicted threadKeys so the caller can clean up mappings.
+   */
+  evict(): string[] {
+    const now = Date.now();
+    const evicted: string[] = [];
+
+    // 1. Evict idle sessions
+    for (const [key, ts] of this.lastActivity) {
+      if (now - ts > this.idleMs) {
+        evicted.push(key);
+      }
+    }
+    for (const key of evicted) {
+      this.lastActivity.delete(key);
+    }
+
+    // 2. If still over capacity, evict oldest (LRU)
+    if (this.lastActivity.size > this.maxSessions) {
+      const sorted = [...this.lastActivity.entries()].sort((a, b) => a[1] - b[1]);
+      const toEvict = sorted.slice(0, this.lastActivity.size - this.maxSessions);
+      for (const [key] of toEvict) {
+        evicted.push(key);
+        this.lastActivity.delete(key);
+      }
+    }
+
+    return evicted;
+  }
+
+  get size(): number {
+    return this.lastActivity.size;
+  }
+}
+
+const threadSessionManager = new ThreadSessionManager();
+
+/**
+ * Periodic cleanup: evict idle/over-capacity thread sessions,
+ * remove their in-memory mappings and DB records.
+ */
+function cleanupThreadSessions(): void {
+  const evicted = threadSessionManager.evict();
+  if (evicted.length === 0) return;
+
+  const { deleteThreadMapping: dbDelete } = require('./db.js');
+  for (const threadKey of evicted) {
+    const mapping = threadAgentMapping.get(threadKey);
+    threadAgentMapping.delete(threadKey);
+  threadSessionManager.remove(threadKey);
+    dbDelete(threadKey);
+    if (mapping) {
+      logger.info(
+        { threadKey, agentId: mapping.agentId },
+        'Thread session evicted (idle/LRU)',
+      );
+    }
+  }
+  logger.info({ evictedCount: evicted.length, remaining: threadSessionManager.size }, 'Thread session cleanup done');
+}
+
 // ===================== Thread-Aware Command Handlers =====================
 
 async function handleThreadClearCommand(
@@ -2326,6 +2414,7 @@ async function handleThreadCommand(
     created_at: now,
   });
 
+  threadSessionManager.touch(threadKey);
   logger.info(
     { chatJid, homeChatJid, agentId, threadKey, name },
     '/thread created conversation agent',
@@ -6612,6 +6701,7 @@ function buildOnAutoThreadCreate(): (
       created_at: now,
     });
 
+    threadSessionManager.touch(threadKey);
     logger.info(
       { chatJid, homeChatJid, agentId, threadKey, name },
       'Auto thread: created conversation agent',
@@ -6631,6 +6721,7 @@ function buildResolveEffectiveChatJid(): (
       const threadKey = getThreadKey(chatJid, rootId);
       const mapping = threadAgentMapping.get(threadKey);
       if (mapping) {
+        threadSessionManager.touch(threadKey);
         const effectiveJid = `${mapping.workspaceJid}#agent:${mapping.agentId}`;
         return { effectiveJid, agentId: mapping.agentId };
       }
@@ -7174,6 +7265,9 @@ async function main(): Promise<void> {
 
   loadState();
   initThreadMappings();
+
+  // Thread session LRU cleanup every 5 minutes
+  setInterval(cleanupThreadSessions, 5 * 60 * 1000);
 
   // --- Channel reload helpers (hot-reload on config save) ---
 
