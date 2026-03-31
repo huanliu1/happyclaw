@@ -22,6 +22,7 @@ export interface McpContext {
   isHome: boolean;
   isAdminHome: boolean;
   isScheduledTask?: boolean;
+  getTurnId?: () => string | undefined;
   workspaceIpc: string;
   workspaceGroup: string;
   workspaceGlobal: string;
@@ -169,6 +170,10 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
           groupFolder: ctx.groupFolder,
           timestamp: new Date().toISOString(),
         };
+        const turnId = ctx.getTurnId?.();
+        if (turnId) {
+          data.turnId = turnId;
+        }
         if (ctx.isScheduledTask) {
           data.isScheduledTask = true;
         }
