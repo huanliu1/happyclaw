@@ -1002,6 +1002,9 @@ async function handleCommand(
       return handleClearCommand(chatJid);
     case 'list':
     case 'ls':
+      if (threadMapping) {
+        return handleThreadListCommand(chatJid, threadMapping.agentId, threadMapping.workspaceJid, rootId!);
+      }
       return handleListCommand(chatJid);
     case 'status':
       if (threadMapping) {
@@ -2319,6 +2322,28 @@ async function handleThreadRecallCommand(
   return header + context;
 }
 
+function handleThreadListCommand(
+  chatJid: string,
+  agentId: string,
+  workspaceJid: string,
+  rootId: string,
+): string {
+  const agent = getAgent(agentId);
+  if (!agent) return '当前话题关联的会话已不存在';
+
+  const statusEmoji = agent.status === 'idle' ? '🟢' : agent.status === 'busy' ? '🟠' : '⚪';
+  const shortId = agentId.slice(0, 8);
+  const wsGroup = registeredGroups[workspaceJid] ?? getRegisteredGroup(workspaceJid);
+  const wsName = wsGroup?.name || findGroupNameByFolder(agent.group_folder) || agent.group_folder;
+
+  return `📋 当前话题会话信息:\n` +
+    `  🧵 话题: ${agent.name}\n` +
+    `  ${statusEmoji} 状态: ${agent.status}\n` +
+    `  🔗 会话ID: ${shortId}\n` +
+    `  📂 工作区: ${wsName}\n\n` +
+    `💡 使用 /thread close 关闭话题，/thread ls 列出所有话题`;
+}
+
 function handleThreadUnbindCommand(
   chatJid: string,
   agentId: string,
@@ -2437,6 +2462,28 @@ async function handleThreadCommand(
   // Create virtual chat
   const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
   dbEnsureChatExists(virtualChatJid);
+  updateChatName(virtualChatJid, name);
+
+  // Store initial system message so the virtual chat has content for the frontend
+  const initMsgId = `thread-init-${agentId}`;
+  storeMessageDirect(
+    initMsgId,
+    virtualChatJid,
+    userId,
+    'system',
+    `🧵 话题「${name}」已创建`,
+    now,
+    true,
+  );
+  broadcastNewMessage(virtualChatJid, {
+    id: initMsgId,
+    chat_jid: virtualChatJid,
+    sender: userId,
+    sender_name: 'system',
+    content: `🧵 话题「${name}」已创建`,
+    timestamp: now,
+    is_from_me: true,
+  });
 
   // Store thread → agent mapping
   // For new threads (/thread from main chat), triggerRootId is undefined.
