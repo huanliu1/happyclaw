@@ -580,9 +580,12 @@ export function createFeishuConnection(
   // LRU deduplication cache
   const MSG_DEDUP_MAX = 1000;
   const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
+  const SLASH_CMD_DEDUP_MAX = 1000;
+  const SLASH_CMD_DEDUP_TTL = 24 * 60 * 60 * 1000; // 24h
 
   // Per-instance state
   const msgCache = new Map<string, number>();
+  const slashCommandCache = new Map<string, number>();
   const senderNameCache = new Map<string, string>();
   const lastMessageIdByChat = new Map<string, string>();
   const ackReactionByChat = new Map<string, string>();
@@ -678,6 +681,27 @@ export function createFeishuConnection(
   function markSeen(msgId: string): void {
     msgCache.delete(msgId);
     msgCache.set(msgId, Date.now());
+  }
+
+  function isSlashCommandDuplicate(msgId: string): boolean {
+    const now = Date.now();
+    for (const [id, ts] of slashCommandCache.entries()) {
+      if (now - ts > SLASH_CMD_DEDUP_TTL) {
+        slashCommandCache.delete(id);
+      } else {
+        break;
+      }
+    }
+    if (slashCommandCache.size >= SLASH_CMD_DEDUP_MAX) {
+      const firstKey = slashCommandCache.keys().next().value;
+      if (firstKey) slashCommandCache.delete(firstKey);
+    }
+    return slashCommandCache.has(msgId);
+  }
+
+  function markSlashCommandSeen(msgId: string): void {
+    slashCommandCache.delete(msgId);
+    slashCommandCache.set(msgId, Date.now());
   }
 
   async function downloadFeishuImage(
@@ -1041,6 +1065,14 @@ export function createFeishuConnection(
     const textForSlash = text?.trim().replace(/^@\S+\s+/, '') ?? '';
     const slashMatch = textForSlash.match(/^\/(\S+)(.*)$/);
     if (slashMatch && onCommand) {
+      if (isSlashCommandDuplicate(messageId)) {
+        logger.info(
+          { chatJid, messageId, cmd: slashMatch[1], source },
+          'Skipping duplicate Feishu slash command',
+        );
+        return;
+      }
+      markSlashCommandSeen(messageId);
       const cmdBody = (slashMatch[1] + slashMatch[2]).trim();
       logger.info(
         { chatJid, cmd: slashMatch[1], cmdBody },
@@ -1060,7 +1092,7 @@ export function createFeishuConnection(
         if (reply) {
           // /thread 命令的响应需要以话题方式发送
           const isThreadCmd = cmdBody.startsWith('thread') && !cmdBody.startsWith('thread_mode');
-          if (isThreadCmd && !rootId) {
+          if (isThreadCmd && !rootId && client) {
             // 创建新话题: reply_in_thread
             const lastMsg = lastMessageIdByChat.get(chatId);
             if (lastMsg) {
@@ -1085,6 +1117,8 @@ export function createFeishuConnection(
             } else {
               await sendTextToChat(chatId, reply);
             }
+          } else if (isThreadCmd && !rootId) {
+            await sendTextToChat(chatId, reply);
           } else if (rootId && client) {
             // 话题内的命令回复：在话题中回复，而非主会话
             try {

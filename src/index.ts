@@ -2421,6 +2421,43 @@ function initThreadMappings(): void {
   }
 }
 
+function getExistingThreadConversation(
+  chatJid: string,
+  rootId?: string,
+): { threadKey: string; agentId: string; workspaceJid: string; name: string } | null {
+  if (!rootId) return null;
+  const threadKey = getThreadKey(chatJid, rootId);
+
+  let mapping = threadAgentMapping.get(threadKey);
+  if (!mapping) {
+    try {
+      const { getThreadMapping } = require('./db.js');
+      const persisted = getThreadMapping(threadKey);
+      if (persisted) {
+        mapping = {
+          agentId: persisted.agent_id,
+          workspaceJid: persisted.workspace_jid,
+        };
+        threadAgentMapping.set(threadKey, mapping);
+      }
+    } catch (err) {
+      logger.warn({ err, threadKey }, 'Failed to load thread mapping for dedup check');
+    }
+  }
+
+  if (!mapping) return null;
+
+  const agent = getAgent(mapping.agentId);
+  if (!agent) return null;
+
+  return {
+    threadKey,
+    agentId: mapping.agentId,
+    workspaceJid: mapping.workspaceJid,
+    name: agent.name || mapping.agentId.slice(0, 8),
+  };
+}
+
 async function handleThreadCommand(
   chatJid: string,
   rawName: string,
@@ -2508,6 +2545,24 @@ async function handleThreadCommand(
   if (typeof resolved === 'string') return resolved;
   const { homeChatJid, effectiveGroup } = resolved;
 
+  const effectiveRootId = triggerRootId || triggerMessageId;
+  const existingThread = getExistingThreadConversation(chatJid, effectiveRootId);
+  if (existingThread) {
+    logger.info(
+      {
+        chatJid,
+        threadKey: existingThread.threadKey,
+        agentId: existingThread.agentId,
+      },
+      'Skipped duplicate /thread command for existing conversation agent',
+    );
+    const shortId = existingThread.agentId.slice(0, 8);
+    return `🧵 当前话题已存在\n` +
+      `📂 工作区: ${effectiveGroup.name || effectiveGroup.folder}\n` +
+      `🔗 会话: ${shortId}\n\n` +
+      `继续在该话题中发送消息即可。`;
+  }
+
   // Create conversation agent
   const name = rawName.trim() || `话题 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
   if (name.length > 40) return '话题名称过长（最多 40 字符）';
@@ -2563,7 +2618,6 @@ async function handleThreadCommand(
   // For new threads (/thread from main chat), triggerRootId is undefined.
   // The /thread command's own messageId becomes the Feishu thread root,
   // so use it as the effective rootId for the mapping key.
-  const effectiveRootId = triggerRootId || triggerMessageId;
   const threadKey = getThreadKey(chatJid, effectiveRootId);
   threadAgentMapping.set(threadKey, { agentId, workspaceJid: homeChatJid });
 
@@ -6824,6 +6878,23 @@ function buildOnAutoThreadCreate(): (
     const resolved = resolveSpawnWorkspace(baseJid, group, userId);
     if (typeof resolved === 'string') return null;
     const { homeChatJid, effectiveGroup } = resolved;
+
+    const existingThread = getExistingThreadConversation(chatJid, rootMessageId);
+    if (existingThread) {
+      logger.info(
+        {
+          chatJid,
+          threadKey: existingThread.threadKey,
+          agentId: existingThread.agentId,
+        },
+        'Auto thread skipped: existing conversation agent already bound',
+      );
+      return {
+        agentId: existingThread.agentId,
+        workspaceJid: existingThread.workspaceJid,
+        name: existingThread.name,
+      };
+    }
 
     const name = `话题 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
     const agentId = crypto.randomUUID();
