@@ -49,6 +49,7 @@ export interface ConnectOptions {
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
   resolveEffectiveChatJid?: (
     chatJid: string,
+    rootId?: string,
   ) => { effectiveJid: string; agentId: string | null } | null;
   /** 当 IM 消息被路由到 conversation agent 后调用 */
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
@@ -1124,7 +1125,7 @@ export function createFeishuConnection(
     }
 
     // Store message and broadcast to WebSocket clients
-    const agentRouting = resolveEffectiveChatJid?.(chatJid);
+    const agentRouting = resolveEffectiveChatJid?.(chatJid, rootId);
     const targetJid = agentRouting?.effectiveJid ?? chatJid;
 
     const targetAgentId = agentRouting?.agentId;

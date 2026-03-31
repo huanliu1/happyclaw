@@ -988,20 +988,40 @@ async function handleCommand(
   const cmd = parts[0].toLowerCase();
   const rawArgs = command.slice(parts[0].length).trim();
 
+  // ── Thread-aware command dispatch ──
+  // When a command is sent inside a Feishu thread that has a mapped agent,
+  // override certain commands to operate on the thread's conversation agent.
+  const threadMapping = rootId ? threadAgentMapping.get(getThreadKey(chatJid, rootId)) : undefined;
+
   switch (cmd) {
     case 'clear':
+      if (threadMapping) {
+        return handleThreadClearCommand(chatJid, threadMapping.agentId, threadMapping.workspaceJid);
+      }
       return handleClearCommand(chatJid);
     case 'list':
     case 'ls':
       return handleListCommand(chatJid);
     case 'status':
+      if (threadMapping) {
+        return handleThreadStatusCommand(chatJid, threadMapping.agentId, rootId!);
+      }
       return handleStatusCommand(chatJid);
     case 'recall':
     case 'rc':
+      if (threadMapping) {
+        return handleThreadRecallCommand(threadMapping.agentId, threadMapping.workspaceJid);
+      }
       return handleRecallCommand(chatJid);
     case 'where':
+      if (threadMapping) {
+        return handleThreadWhereCommand(chatJid, threadMapping.agentId, rootId!);
+      }
       return handleWhereCommand(chatJid);
     case 'unbind':
+      if (threadMapping) {
+        return handleThreadUnbindCommand(chatJid, threadMapping.agentId, rootId!);
+      }
       return handleUnbindCommand(chatJid);
     case 'bind':
       return handleBindCommand(chatJid, rawArgs);
@@ -2121,6 +2141,107 @@ export function collectMessageImages(
  * The container stays alive for idleTimeout after each result, allowing
  * rapid-fire messages to be piped in without spawning a new container.
  */
+
+// ===================== Thread-Aware Command Handlers =====================
+
+async function handleThreadClearCommand(
+  chatJid: string,
+  agentId: string,
+  workspaceJid: string,
+): Promise<string> {
+  const group = registeredGroups[workspaceJid] ?? getRegisteredGroup(workspaceJid);
+  if (!group) return '话题关联的工作区未找到';
+
+  const virtualChatJid = `${workspaceJid}#agent:${agentId}`;
+  try {
+    await executeSessionReset(
+      virtualChatJid,
+      group.folder,
+      {
+        queue,
+        sessions,
+        broadcast: broadcastNewMessage,
+        setLastAgentTimestamp: setCursors,
+      },
+      agentId,
+    );
+    return '已清除话题对话上下文 ✓';
+  } catch (err) {
+    logger.error({ chatJid, agentId, err }, '/clear in thread failed');
+    return '清除话题上下文失败，请稍后重试';
+  }
+}
+
+function handleThreadStatusCommand(
+  chatJid: string,
+  agentId: string,
+  rootId: string,
+): string {
+  const agent = getAgent(agentId);
+  if (!agent) return '话题关联的 Agent 未找到';
+  const shortId = agentId.slice(0, 8);
+  const statusEmoji = agent.status === 'running' ? '🟢' : agent.status === 'idle' ? '⚪' : '🔴';
+  return `🧵 话题 Agent 状态\n` +
+    `  名称: ${agent.name}\n` +
+    `  ID: ${shortId}\n` +
+    `  状态: ${statusEmoji} ${agent.status}\n` +
+    `  工作区: ${agent.group_folder}\n` +
+    `  创建于: ${agent.created_at}`;
+}
+
+function handleThreadWhereCommand(
+  chatJid: string,
+  agentId: string,
+  rootId: string,
+): string {
+  const agent = getAgent(agentId);
+  if (!agent) return '话题关联的 Agent 未找到';
+  const shortId = agentId.slice(0, 8);
+  return `📍 当前话题: ${agent.name} (${shortId})\n` +
+    `📂 工作区: ${agent.group_folder}`;
+}
+
+async function handleThreadRecallCommand(
+  agentId: string,
+  workspaceJid: string,
+): Promise<string> {
+  const agent = getAgent(agentId);
+  if (!agent) return '话题关联的 Agent 未找到';
+  const virtualChatJid = `${workspaceJid}#agent:${agentId}`;
+  const header = `🧵 话题「${agent.name}」`;
+
+  const messages = getMessagesPage(virtualChatJid, undefined, 10);
+  if (messages.length === 0) return `${header}\n\n📭 话题内暂无消息记录`;
+
+  const transcript = messages
+    .reverse()
+    .map((msg) => {
+      const who = msg.is_from_me ? 'AI' : msg.sender_name || '用户';
+      const text = (msg.content || '').slice(0, 300);
+      return `${who}: ${text}`;
+    })
+    .join('\n');
+
+  const summary = await summarizeWithClaude(transcript);
+  if (summary) return `${header}\n\n${summary}`;
+
+  const context = getConversationContext(agent.group_folder, agentId, 10, 200);
+  if (!context) return `${header}\n\n📭 话题内暂无消息记录`;
+  return header + context;
+}
+
+function handleThreadUnbindCommand(
+  chatJid: string,
+  agentId: string,
+  rootId: string,
+): string {
+  const threadKey = getThreadKey(chatJid, rootId);
+  threadAgentMapping.delete(threadKey);
+  const { deleteThreadMapping: dbDelete } = require('./db.js');
+  dbDelete(threadKey);
+  logger.info({ chatJid, agentId, threadKey }, 'Thread mapping removed via /unbind');
+  return `已解除话题绑定。此话题后续消息将回到主对话。`;
+}
 
 // ===================== Thread Isolation =====================
 
@@ -6430,8 +6551,19 @@ function buildOnPairAttempt(
  */
 function buildResolveEffectiveChatJid(): (
   chatJid: string,
+  rootId?: string,
 ) => { effectiveJid: string; agentId: string | null } | null {
-  return (chatJid: string) => {
+  return (chatJid: string, rootId?: string) => {
+    // Thread isolation routing takes highest priority
+    if (rootId) {
+      const threadKey = getThreadKey(chatJid, rootId);
+      const mapping = threadAgentMapping.get(threadKey);
+      if (mapping) {
+        const effectiveJid = `${mapping.workspaceJid}#agent:${mapping.agentId}`;
+        return { effectiveJid, agentId: mapping.agentId };
+      }
+    }
+
     const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
     if (!group) return null;
 
@@ -6969,6 +7101,7 @@ async function main(): Promise<void> {
   migrateSystemIMToPerUser();
 
   loadState();
+  initThreadMappings();
 
   // --- Channel reload helpers (hot-reload on config save) ---
 
