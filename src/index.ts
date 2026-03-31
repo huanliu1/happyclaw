@@ -5886,7 +5886,6 @@ async function processAgentConversation(
           try {
             await agentStreamingSession.complete(text);
             streamingCardHandledIM = true;
-            imManager.clearAckReaction(replySourceImJid ?? chatJid);
           } catch (err) {
             logger.warn(
               { err, chatJid, agentId },
@@ -6123,7 +6122,6 @@ async function processAgentConversation(
     hadError = true;
     logger.error({ agentId, chatJid, err }, 'Agent conversation error');
   } finally {
-    imManager.clearAckReaction(replySourceImJid ?? chatJid);
     if (idleTimer) clearTimeout(idleTimer);
 
     const wasInterrupted = agentStreamInterrupted && !cursorCommitted;
