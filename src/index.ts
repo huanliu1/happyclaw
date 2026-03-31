@@ -6549,6 +6549,78 @@ function buildOnPairAttempt(
  * workspace main conversation binding (target_main_jid).
  * Returns null if the chatJid has no binding configured.
  */
+function buildShouldAutoThread(): (chatJid: string) => boolean {
+  return (chatJid: string) => {
+    const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+    return group?.thread_mode === 'auto';
+  };
+}
+
+function buildOnAutoThreadCreate(): (
+  chatJid: string,
+  rootMessageId: string,
+) => Promise<{ agentId: string; workspaceJid: string; name: string } | null> {
+  return async (chatJid: string, rootMessageId: string) => {
+    const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+    if (!group) return null;
+    const userId = group.created_by;
+    if (!userId) return null;
+
+    const { createAgent: dbCreateAgent, ensureChatExists: dbEnsureChatExists,
+            createThreadMapping } = require('./db.js');
+
+    const baseJid = stripVirtualJidSuffix(chatJid);
+    const resolved = resolveSpawnWorkspace(baseJid, group, userId);
+    if (typeof resolved === 'string') return null;
+    const { homeChatJid, effectiveGroup } = resolved;
+
+    const name = `话题 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+    const agentId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const agent = {
+      id: agentId,
+      group_folder: effectiveGroup.folder,
+      chat_jid: homeChatJid,
+      name,
+      prompt: '',
+      status: 'idle' as const,
+      kind: 'conversation' as const,
+      created_by: userId,
+      created_at: now,
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: chatJid,
+      spawned_from_jid: null,
+    };
+    dbCreateAgent(agent);
+    ensureAgentDirectories(effectiveGroup.folder, agentId);
+
+    const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
+    dbEnsureChatExists(virtualChatJid);
+
+    // Use the user's message ID as the thread rootId
+    const threadKey = getThreadKey(chatJid, rootMessageId);
+    threadAgentMapping.set(threadKey, { agentId, workspaceJid: homeChatJid });
+
+    createThreadMapping({
+      thread_key: threadKey,
+      agent_id: agentId,
+      workspace_jid: homeChatJid,
+      im_jid: chatJid,
+      root_message_id: rootMessageId,
+      created_at: now,
+    });
+
+    logger.info(
+      { chatJid, homeChatJid, agentId, threadKey, name },
+      'Auto thread: created conversation agent',
+    );
+
+    return { agentId, workspaceJid: homeChatJid, name };
+  };
+}
+
 function buildResolveEffectiveChatJid(): (
   chatJid: string,
   rootId?: string,
@@ -7281,6 +7353,8 @@ async function main(): Promise<void> {
           ignoreMessagesBefore: Date.now(),
           resolveGroupFolder: (chatJid) => resolveEffectiveFolder(chatJid),
           resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+        shouldAutoThread: buildShouldAutoThread(),
+        onAutoThreadCreate: buildOnAutoThreadCreate(),
           onAgentMessage: buildOnAgentMessage(),
           onBotAddedToGroup: buildTelegramBotAddedHandler(
             adminUser.id,
@@ -7362,6 +7436,8 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+        shouldAutoThread: buildShouldAutoThread(),
+        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
             onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
@@ -7395,6 +7471,8 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+        shouldAutoThread: buildShouldAutoThread(),
+        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
           },
         );
@@ -7422,6 +7500,8 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+        shouldAutoThread: buildShouldAutoThread(),
+        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
             onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
@@ -7462,6 +7542,8 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+        shouldAutoThread: buildShouldAutoThread(),
+        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
           },
         );

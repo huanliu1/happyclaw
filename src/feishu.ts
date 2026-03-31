@@ -61,6 +61,13 @@ export interface ConnectOptions {
   shouldProcessGroupMessage?: (chatJid: string) => boolean;
   /** 飞书流式卡片按钮中断回调 */
   onCardInterrupt?: (chatJid: string) => void;
+  /** 判断是否启用自动话题模式 */
+  shouldAutoThread?: (chatJid: string) => boolean;
+  /** 自动话题模式：创建 agent 和映射，返回路由信息 */
+  onAutoThreadCreate?: (
+    chatJid: string,
+    rootMessageId: string,
+  ) => Promise<{ agentId: string; workspaceJid: string; name: string } | null>;
 }
 
 export interface FeishuChatInfo {
@@ -852,6 +859,8 @@ export function createFeishuConnection(
       resolveEffectiveChatJid,
       onAgentMessage,
       shouldProcessGroupMessage,
+      shouldAutoThread,
+      onAutoThreadCreate,
     } = connectOptions || {};
     const {
       chatId,
@@ -1124,8 +1133,39 @@ export function createFeishuConnection(
         .catch(() => {});
     }
 
+    // ── Auto Thread Mode ──
+    // When thread_mode === 'auto' and message has no rootId (top-level message),
+    // automatically create a Feishu thread and conversation agent.
+    let autoThreadOverride: { effectiveJid: string; agentId: string } | null = null;
+    if (!rootId && chatType === 'group' && shouldAutoThread?.(chatJid) && client) {
+      try {
+        const autoResult = await onAutoThreadCreate?.(chatJid, messageId);
+        if (autoResult) {
+          // Reply in thread to create the Feishu topic
+          await client.im.message.reply({
+            path: { message_id: messageId },
+            data: {
+              content: JSON.stringify({ text: `🧵 ${autoResult.name}` }),
+              msg_type: 'text',
+              reply_in_thread: true,
+            },
+          });
+          autoThreadOverride = {
+            effectiveJid: `${autoResult.workspaceJid}#agent:${autoResult.agentId}`,
+            agentId: autoResult.agentId,
+          };
+          logger.info(
+            { chatJid, messageId, agentId: autoResult.agentId },
+            'Auto thread created',
+          );
+        }
+      } catch (autoErr) {
+        logger.warn({ autoErr, chatJid }, 'Auto thread creation failed, falling back to normal');
+      }
+    }
+
     // Store message and broadcast to WebSocket clients
-    const agentRouting = resolveEffectiveChatJid?.(chatJid, rootId);
+    const agentRouting = autoThreadOverride || resolveEffectiveChatJid?.(chatJid, rootId);
     const targetJid = agentRouting?.effectiveJid ?? chatJid;
 
     const targetAgentId = agentRouting?.agentId;
