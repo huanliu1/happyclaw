@@ -1091,7 +1091,7 @@ function collectWorkspaces(userId: string): WorkspaceInfo[] {
     seen.add(g.folder);
 
     const agents = listAgentsByJid(g.jid)
-      .filter((a) => a.kind === 'conversation')
+      .filter((a) => a.kind === 'conversation' && a.status !== 'completed')
       .map((a) => ({ id: a.id, name: a.name, status: a.status }));
 
     workspaces.push({ folder: g.folder, name: g.name, agents });
@@ -1099,7 +1099,7 @@ function collectWorkspaces(userId: string): WorkspaceInfo[] {
 
   if (isAdmin && !seen.has(MAIN_GROUP_FOLDER)) {
     const agents = listAgentsByJid(DEFAULT_MAIN_JID)
-      .filter((a) => a.kind === 'conversation')
+      .filter((a) => a.kind === 'conversation' && a.status !== 'completed')
       .map((a) => ({ id: a.id, name: a.name, status: a.status }));
     workspaces.push({
       folder: MAIN_GROUP_FOLDER,
