@@ -1040,6 +1040,13 @@ async function runQuery(
       return; // No setTimeout needed — watcher will trigger next check on file change
     }
 
+    // After a result is received, don't push new user messages into the stream.
+    // They belong to the next query and will be picked up by waitForIpcMessage().
+    // Pushing them now risks writing to a transport that's being torn down (race).
+    if (resultReceivedAt) {
+      return;
+    }
+
     const { messages } = drainIpcInput();
     for (const msg of messages) {
       log(`Piping IPC message into active query (${msg.text.length} chars, ${msg.images?.length || 0} images)`);
@@ -1990,6 +1997,13 @@ process.on('unhandledRejection', (reason: unknown) => {
   const errno = reason as NodeJS.ErrnoException;
   if (errno?.code === 'EPIPE') {
     process.exit(0);
+  }
+  // ProcessTransport teardown race: query ended but SDK still tried to write.
+  // This is benign — treat like EPIPE rather than crashing the process.
+  const reasonStr = reason instanceof Error ? reason.message : String(reason);
+  if (reasonStr.includes('ProcessTransport is not ready for writing')) {
+    console.error('ProcessTransport write after close (non-fatal):', reasonStr);
+    return;
   }
   if (isWithinInterruptGraceWindow()) {
     console.error('Unhandled rejection during interrupt (non-fatal):', reason);

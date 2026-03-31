@@ -983,6 +983,7 @@ async function handleCommand(
   chatJid: string,
   command: string,
   rootId?: string,
+  messageId?: string,
 ): Promise<string | null> {
   const parts = command.split(/\s+/);
   const cmd = parts[0].toLowerCase();
@@ -1033,7 +1034,7 @@ async function handleCommand(
     case 'spawn':
       return handleSpawnCommand(chatJid, rawArgs, chatJid);
     case 'thread':
-      return handleThreadCommand(chatJid, rawArgs, rootId);
+      return handleThreadCommand(chatJid, rawArgs, rootId, messageId);
     case 'thread_mode':
       return handleThreadModeCommand(chatJid, rawArgs);
     default:
@@ -2357,7 +2358,43 @@ async function handleThreadCommand(
   chatJid: string,
   rawName: string,
   triggerRootId?: string,
+  triggerMessageId?: string,
 ): Promise<string> {
+  // ── /thread close|end|stop: 关闭当前话题 ──
+  const subCmd = rawName.trim().toLowerCase();
+  if (subCmd === 'close' || subCmd === 'end' || subCmd === 'stop') {
+    if (!triggerRootId) {
+      return '请在话题内使用 /thread close 来关闭当前话题。';
+    }
+    const threadKey = getThreadKey(chatJid, triggerRootId);
+    const mapping = threadAgentMapping.get(threadKey);
+    if (!mapping) {
+      return '当前话题未绑定独立会话，无需关闭。';
+    }
+    const agentId = mapping.agentId;
+    threadAgentMapping.delete(threadKey);
+    threadSessionManager.remove(threadKey);
+    const { deleteThreadMapping: dbDelete } = require('./db.js');
+    dbDelete(threadKey);
+    logger.info({ chatJid, agentId, threadKey }, 'Thread closed via /thread close');
+    return `🔒 话题已关闭，后续消息将不再路由到独立会话。\n发送 /thread 可创建新话题。`;
+  }
+
+  // ── /thread list: 列出当前群的所有活跃话题 ──
+  if (subCmd === 'list' || subCmd === 'ls') {
+    const entries: string[] = [];
+    for (const [key, mapping] of threadAgentMapping) {
+      if (key.startsWith(chatJid + '::thread::')) {
+        const agent = getAgent(mapping.agentId);
+        const name = agent?.name || mapping.agentId.slice(0, 8);
+        const status = agent?.status || 'unknown';
+        entries.push(`  • ${name} [${status}]`);
+      }
+    }
+    if (entries.length === 0) return '当前群没有活跃的话题会话。';
+    return `📋 活跃话题 (${entries.length}):\n${entries.join('\n')}`;
+  }
+
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
   const userId = group.created_by;
@@ -2402,7 +2439,11 @@ async function handleThreadCommand(
   dbEnsureChatExists(virtualChatJid);
 
   // Store thread → agent mapping
-  const threadKey = getThreadKey(chatJid, triggerRootId);
+  // For new threads (/thread from main chat), triggerRootId is undefined.
+  // The /thread command's own messageId becomes the Feishu thread root,
+  // so use it as the effective rootId for the mapping key.
+  const effectiveRootId = triggerRootId || triggerMessageId;
+  const threadKey = getThreadKey(chatJid, effectiveRootId);
   threadAgentMapping.set(threadKey, { agentId, workspaceJid: homeChatJid });
 
   createThreadMapping({
@@ -2410,7 +2451,7 @@ async function handleThreadCommand(
     agent_id: agentId,
     workspace_jid: homeChatJid,
     im_jid: chatJid,
-    root_message_id: triggerRootId || null,
+    root_message_id: effectiveRootId || null,
     created_at: now,
   });
 

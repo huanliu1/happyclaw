@@ -43,7 +43,7 @@ export interface ConnectOptions {
   /** 热重连时设置：丢弃 create_time 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
   ignoreMessagesBefore?: number;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null */
-  onCommand?: (chatJid: string, command: string, rootId?: string) => Promise<string | null>;
+  onCommand?: (chatJid: string, command: string, rootId?: string, messageId?: string) => Promise<string | null>;
   /** 根据 chatJid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (chatJid: string) => string | undefined;
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
@@ -1047,7 +1047,7 @@ export function createFeishuConnection(
         'Feishu slash command detected',
       );
       try {
-        const reply = await onCommand(chatJid, cmdBody, rootId);
+        const reply = await onCommand(chatJid, cmdBody, rootId, messageId);
         logger.info(
           {
             chatJid,
@@ -1083,6 +1083,21 @@ export function createFeishuConnection(
                 await sendTextToChat(chatId, reply);
               }
             } else {
+              await sendTextToChat(chatId, reply);
+            }
+          } else if (rootId && client) {
+            // 话题内的命令回复：在话题中回复，而非主会话
+            try {
+              await client.im.message.reply({
+                path: { message_id: messageId },
+                data: {
+                  content: JSON.stringify({ text: reply }),
+                  msg_type: 'text',
+                  reply_in_thread: true,
+                },
+              });
+            } catch (threadReplyErr) {
+              logger.warn({ threadReplyErr, chatId }, 'Failed to reply in thread for command, falling back');
               await sendTextToChat(chatId, reply);
             }
           } else {
