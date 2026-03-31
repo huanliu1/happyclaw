@@ -1746,8 +1746,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
       }
-      // Spawn agents are fire-and-forget: auto-remove from frontend state after completion
-      if (resolvedKind === 'spawn' && (status === 'completed' || status === 'error')) {
+      // Spawn/conversation agents: auto-remove from frontend state after completion
+      if ((resolvedKind === 'spawn' || resolvedKind === 'conversation') && (status === 'completed' || status === 'error')) {
         scheduleDbTaskAgentCleanup(set, agentId, chatJid);
       }
 
@@ -1777,7 +1777,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/groups/${encodeURIComponent(jid)}/agents`,
       );
       set((s) => {
-        const visibleAgents = data.agents.filter((a) => a.kind === 'conversation' || (a.kind === 'spawn' && a.status !== 'completed') || a.status === 'running');
+        const visibleAgents = data.agents.filter((a) => (a.kind === 'conversation' && a.status !== 'completed') || (a.kind === 'spawn' && a.status !== 'completed') || a.status === 'running');
         const runningTasks = data.agents.filter((a) => a.kind === 'task' && a.status === 'running');
         const runningTaskIds = new Set(runningTasks.map((a) => a.id));
         const runningTaskMap = new Map(runningTasks.map((a) => [a.id, a]));
