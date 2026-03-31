@@ -69,7 +69,9 @@ import {
   updateAgentStatus,
   updateAgentLastImJid,
   updateAgentInfo,
+  deleteAgent,
   deleteCompletedAgents,
+  deleteMessagesForChatJid,
   getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
   markAllRunningTaskAgentsAsError,
@@ -2351,22 +2353,46 @@ function handleThreadUnbindCommand(
 ): string {
   const threadKey = getThreadKey(chatJid, rootId);
   const mapping = threadAgentMapping.get(threadKey);
+  const agent = getAgent(agentId);
+  const agentName = agent?.name || agentId.slice(0, 8);
+  const agentPrompt = agent?.prompt || '';
+  const groupFolder = agent?.group_folder;
+  const wsJid = mapping?.workspaceJid || '';
+
+  // 1. Remove thread mapping
   threadAgentMapping.delete(threadKey);
   closedThreadKeys.add(threadKey);
   const { deleteThreadMapping: dbDelete } = require('./db.js');
   dbDelete(threadKey);
-  // Mark agent as completed so frontend removes the sub-conversation
-  try {
-    updateAgentStatus(agentId, 'completed');
-    const agent = getAgent(agentId);
-    const wsJid = mapping?.workspaceJid || '';
-    if (wsJid) {
-      broadcastAgentStatus(wsJid, agentId, 'completed', agent?.name, undefined, undefined, 'unbind');
-    }
-  } catch (err) {
-    logger.warn({ err, agentId }, 'Failed to update agent status on thread unbind');
+
+  // 2. Stop running process if active
+  if (agent && (agent.status === 'running' || agent.status === 'idle') && wsJid) {
+    updateAgentStatus(agentId, 'error', '话题解绑');
+    const virtualJid = `${wsJid}#agent:${agentId}`;
+    try { queue.stopGroup(virtualJid); } catch {}
   }
-  logger.info({ chatJid, agentId, threadKey }, 'Thread mapping removed via /unbind');
+
+  // 3. Clean up IPC & session directories
+  if (groupFolder) {
+    const agentIpcDir = path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId);
+    const agentSessionDir = path.join(DATA_DIR, 'sessions', groupFolder, 'agents', agentId);
+    try { fs.rmSync(agentIpcDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(agentSessionDir, { recursive: true, force: true }); } catch {}
+    deleteSession(groupFolder, agentId);
+  }
+
+  // 4. Delete virtual chat messages & agent DB record
+  if (wsJid) {
+    const virtualChatJid = `${wsJid}#agent:${agentId}`;
+    deleteMessagesForChatJid(virtualChatJid);
+  }
+  deleteAgent(agentId);
+
+  // 5. Broadcast removal to frontend
+  if (wsJid) {
+    broadcastAgentStatus(wsJid, agentId, 'error', agentName, agentPrompt, '__removed__');
+  }
+  logger.info({ chatJid, agentId, threadKey }, 'Thread unbind (agent fully deleted)');
   return `已解除话题绑定。此话题后续消息将回到主对话。`;
 }
 
@@ -2414,20 +2440,42 @@ async function handleThreadCommand(
     }
     const agentId = mapping.agentId;
     const workspaceJid = mapping.workspaceJid;
+    const agent = getAgent(agentId);
+    const agentName = agent?.name || agentId.slice(0, 8);
+    const agentPrompt = agent?.prompt || '';
+    const groupFolder = agent?.group_folder;
+
+    // 1. Remove thread mapping (memory + DB)
     threadAgentMapping.delete(threadKey);
     threadSessionManager.remove(threadKey);
     closedThreadKeys.add(threadKey);
     const { deleteThreadMapping: dbDelete } = require('./db.js');
     dbDelete(threadKey);
-    // Mark agent as completed so frontend removes the sub-conversation
-    try {
-      updateAgentStatus(agentId, 'completed');
-      const agent = getAgent(agentId);
-      broadcastAgentStatus(workspaceJid, agentId, 'completed', agent?.name, undefined, undefined, 'close');
-    } catch (err) {
-      logger.warn({ err, agentId }, 'Failed to update agent status on thread close');
+
+    // 2. Stop running process if active
+    if (agent && (agent.status === 'running' || agent.status === 'idle')) {
+      updateAgentStatus(agentId, 'error', '话题关闭');
+      const virtualJid = `${workspaceJid}#agent:${agentId}`;
+      try { queue.stopGroup(virtualJid); } catch {}
     }
-    logger.info({ chatJid, agentId, threadKey }, 'Thread closed via /thread close');
+
+    // 3. Clean up IPC & session directories
+    if (groupFolder) {
+      const agentIpcDir = path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId);
+      const agentSessionDir = path.join(DATA_DIR, 'sessions', groupFolder, 'agents', agentId);
+      try { fs.rmSync(agentIpcDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(agentSessionDir, { recursive: true, force: true }); } catch {}
+      deleteSession(groupFolder, agentId);
+    }
+
+    // 4. Delete virtual chat messages & agent DB record
+    const virtualChatJid = `${workspaceJid}#agent:${agentId}`;
+    deleteMessagesForChatJid(virtualChatJid);
+    deleteAgent(agentId);
+
+    // 5. Broadcast removal to frontend (same signal as frontend delete)
+    broadcastAgentStatus(workspaceJid, agentId, 'error', agentName, agentPrompt, '__removed__');
+    logger.info({ chatJid, agentId, threadKey }, 'Thread closed via /thread close (agent fully deleted)');
     return `🔒 话题已关闭，后续消息将不再路由到独立会话。\n发送 /thread 可创建新话题。`;
   }
 
