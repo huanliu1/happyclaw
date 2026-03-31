@@ -51,7 +51,6 @@ let db: InstanceType<typeof Database>;
 // Prepared statement cache — lazy-initialized on first use after initDatabase()
 let _stmts: {
   storeMessageSelect: any;
-  storeAgentMessageSelect: any;
   storeMessageInsert: any;
   insertUsageInsert: any;
   insertUsageUpsert: any;
@@ -68,26 +67,14 @@ const _newMsgStmtCache = new Map<number, any>();
 
 function stmts() {
   if (!_stmts) {
-      _stmts = {
-        storeMessageSelect: db.prepare(
-          `SELECT id FROM messages
+    _stmts = {
+      storeMessageSelect: db.prepare(
+        `SELECT id FROM messages
          WHERE chat_jid = ? AND turn_id = ? AND source_kind = 'sdk_final'
          ORDER BY timestamp DESC LIMIT 1`,
-        ),
-        storeAgentMessageSelect: db.prepare(
-          `SELECT id FROM messages
-         WHERE chat_jid = ? AND turn_id = ?
-           AND source_kind IN ('sdk_final', 'sdk_send_message')
-         ORDER BY
-           CASE source_kind
-             WHEN 'sdk_final' THEN 0
-             ELSE 1
-           END,
-           timestamp DESC
-         LIMIT 1`,
-        ),
-        storeMessageInsert: db.prepare(
-          `INSERT OR REPLACE INTO messages (
+      ),
+      storeMessageInsert: db.prepare(
+        `INSERT OR REPLACE INTO messages (
           id, chat_jid, source_jid, sender, sender_name, content, timestamp, is_from_me,
           attachments, token_usage, turn_id, session_id, sdk_message_uuid, source_kind, finalization_reason
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1340,14 +1327,8 @@ export function storeMessageDirect(
 ): string {
   const { attachments, tokenUsage, sourceJid, meta } = opts ?? {};
   const existingFinalRow =
-  meta?.sourceKind === 'sdk_final' && meta.turnId
-      ? (chatJid.includes('#agent:')
-          ? (stmts().storeAgentMessageSelect.get(chatJid, meta.turnId) as
-              | { id: string }
-              | undefined)
-          : (stmts().storeMessageSelect.get(chatJid, meta.turnId) as
-              | { id: string }
-              | undefined))
+    meta?.sourceKind === 'sdk_final' && meta.turnId
+      ? (stmts().storeMessageSelect.get(chatJid, meta.turnId) as { id: string } | undefined)
       : undefined;
   const effectiveMsgId = existingFinalRow?.id || msgId;
   stmts().storeMessageInsert.run(

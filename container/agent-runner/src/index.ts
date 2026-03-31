@@ -1612,7 +1612,6 @@ async function main(): Promise<void> {
     isHome,
     isAdminHome,
     isScheduledTask: containerInput.isScheduledTask || false,
-    getTurnId: () => containerInput.turnId,
     workspaceIpc: WORKSPACE_IPC,
     workspaceGroup: WORKSPACE_GROUP,
     workspaceGlobal: WORKSPACE_GLOBAL,

@@ -4504,8 +4504,6 @@ function startIpcWatcher(): void {
                 const webText = cardText || data.text;
                 await sendMessage(effectiveChatJid, webText, {
                   messageMeta: {
-                    turnId:
-                      typeof data.turnId === 'string' ? data.turnId : undefined,
                     sourceKind: 'sdk_send_message',
                   },
                 });
