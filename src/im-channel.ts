@@ -50,7 +50,7 @@ export interface IMChannelConnectOpts {
     code: string,
   ) => Promise<boolean>;
   /** Slash command callback (e.g. /clear). Returns reply text or null. */
-  onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  onCommand?: (chatJid: string, command: string, rootId?: string) => Promise<string | null>;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (jid: string) => string | undefined;
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */

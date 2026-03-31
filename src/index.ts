@@ -982,6 +982,7 @@ async function clearSessionRuntimeFiles(
 async function handleCommand(
   chatJid: string,
   command: string,
+  rootId?: string,
 ): Promise<string | null> {
   const parts = command.split(/\s+/);
   const cmd = parts[0].toLowerCase();
@@ -1011,6 +1012,10 @@ async function handleCommand(
     case 'sw':
     case 'spawn':
       return handleSpawnCommand(chatJid, rawArgs, chatJid);
+    case 'thread':
+      return handleThreadCommand(chatJid, rawArgs, rootId);
+    case 'thread_mode':
+      return handleThreadModeCommand(chatJid, rawArgs);
     default:
       return null;
   }
@@ -2116,6 +2121,122 @@ export function collectMessageImages(
  * The container stays alive for idleTimeout after each result, allowing
  * rapid-fire messages to be piped in without spawning a new container.
  */
+
+// ===================== Thread Isolation =====================
+
+/** In-memory cache of thread → agent mappings, loaded from DB at startup */
+const threadAgentMapping = new Map<string, { agentId: string; workspaceJid: string }>();
+
+function getThreadKey(chatJid: string, rootId?: string): string {
+  return rootId ? `${chatJid}::thread::${rootId}` : chatJid;
+}
+
+function initThreadMappings(): void {
+  try {
+    const { loadAllThreadMappings } = require('./db.js');
+    const mappings = loadAllThreadMappings();
+    for (const [key, value] of mappings) {
+      threadAgentMapping.set(key, value);
+    }
+    logger.info({ count: mappings.size }, 'Thread mappings loaded from DB');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to load thread mappings');
+  }
+}
+
+async function handleThreadCommand(
+  chatJid: string,
+  rawName: string,
+  triggerRootId?: string,
+): Promise<string> {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+  const userId = group.created_by;
+  if (!userId) return '无法确定当前聊天所属用户';
+
+  const { createAgent: dbCreateAgent, ensureChatExists: dbEnsureChatExists,
+          createThreadMapping } = require('./db.js');
+
+  // Resolve target workspace
+  const baseJid = stripVirtualJidSuffix(chatJid);
+  const resolved = resolveSpawnWorkspace(baseJid, group, userId);
+  if (typeof resolved === 'string') return resolved;
+  const { homeChatJid, effectiveGroup } = resolved;
+
+  // Create conversation agent
+  const name = rawName.trim() || `话题 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+  if (name.length > 40) return '话题名称过长（最多 40 字符）';
+
+  const agentId = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  const agent = {
+    id: agentId,
+    group_folder: effectiveGroup.folder,
+    chat_jid: homeChatJid,
+    name,
+    prompt: '',
+    status: 'idle' as const,
+    kind: 'conversation' as const,
+    created_by: userId,
+    created_at: now,
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: chatJid,
+    spawned_from_jid: null,
+  };
+  dbCreateAgent(agent);
+  ensureAgentDirectories(effectiveGroup.folder, agentId);
+
+  // Create virtual chat
+  const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
+  dbEnsureChatExists(virtualChatJid);
+
+  // Store thread → agent mapping
+  const threadKey = getThreadKey(chatJid, triggerRootId);
+  threadAgentMapping.set(threadKey, { agentId, workspaceJid: homeChatJid });
+
+  createThreadMapping({
+    thread_key: threadKey,
+    agent_id: agentId,
+    workspace_jid: homeChatJid,
+    im_jid: chatJid,
+    root_message_id: triggerRootId || null,
+    created_at: now,
+  });
+
+  logger.info(
+    { chatJid, homeChatJid, agentId, threadKey, name },
+    '/thread created conversation agent',
+  );
+
+  const shortId = agentId.slice(0, 8);
+  return `🧵 话题「${name}」已创建\n` +
+    `📂 工作区: ${effectiveGroup.name || effectiveGroup.folder}\n` +
+    `🔗 会话: ${shortId}\n\n` +
+    `此话题内的对话将独立于主对话。\n` +
+    `发送 /clear 可清除话题上下文，/unbind 可解除话题绑定。`;
+}
+
+async function handleThreadModeCommand(
+  chatJid: string,
+  rawMode: string,
+): Promise<string> {
+  const mode = rawMode.trim().toLowerCase();
+  if (!mode || !['off', 'manual', 'auto'].includes(mode)) {
+    return '用法: /thread_mode <off|manual|auto>\n' +
+      '  off    - 关闭话题功能（默认）\n' +
+      '  manual - 仅通过 /thread 手动创建\n' +
+      '  auto   - 每条新消息自动创建话题';
+  }
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+  (group as any).thread_mode = mode;
+  setRegisteredGroup(chatJid, group);
+  registeredGroups[chatJid] = group;
+  return `话题模式已设为: ${mode}`;
+}
+
 async function processGroupMessages(chatJid: string): Promise<boolean> {
   let group = registeredGroups[chatJid];
   if (!group) {

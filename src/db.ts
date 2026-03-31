@@ -418,6 +418,21 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
   `);
 
+
+  // Thread isolation mappings
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS thread_mappings (
+      thread_key TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      workspace_jid TEXT NOT NULL,
+      im_jid TEXT NOT NULL,
+      root_message_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_thread_agent ON thread_mappings(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_thread_im ON thread_mappings(im_jid);
+  `);
+
   // Billing tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS billing_plans (
@@ -5331,4 +5346,81 @@ export function closeDatabase(): void {
   if (db) {
     db.close();
   }
+}
+
+
+// ===================== Thread Mapping CRUD =====================
+
+export interface ThreadMapping {
+  thread_key: string;
+  agent_id: string;
+  workspace_jid: string;
+  im_jid: string;
+  root_message_id: string | null;
+  created_at: string;
+}
+
+export function createThreadMapping(mapping: ThreadMapping): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO thread_mappings (thread_key, agent_id, workspace_jid, im_jid, root_message_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    mapping.thread_key,
+    mapping.agent_id,
+    mapping.workspace_jid,
+    mapping.im_jid,
+    mapping.root_message_id,
+    mapping.created_at,
+  );
+}
+
+export function getThreadMapping(threadKey: string): ThreadMapping | undefined {
+  const row = db
+    .prepare('SELECT * FROM thread_mappings WHERE thread_key = ?')
+    .get(threadKey) as Record<string, unknown> | undefined;
+  if (!row) return undefined;
+  return {
+    thread_key: String(row.thread_key),
+    agent_id: String(row.agent_id),
+    workspace_jid: String(row.workspace_jid),
+    im_jid: String(row.im_jid),
+    root_message_id: typeof row.root_message_id === 'string' ? row.root_message_id : null,
+    created_at: String(row.created_at),
+  };
+}
+
+export function getThreadMappingsByImJid(imJid: string): ThreadMapping[] {
+  const rows = db
+    .prepare('SELECT * FROM thread_mappings WHERE im_jid = ? ORDER BY created_at DESC')
+    .all(imJid) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    thread_key: String(row.thread_key),
+    agent_id: String(row.agent_id),
+    workspace_jid: String(row.workspace_jid),
+    im_jid: String(row.im_jid),
+    root_message_id: typeof row.root_message_id === 'string' ? row.root_message_id : null,
+    created_at: String(row.created_at),
+  }));
+}
+
+export function deleteThreadMapping(threadKey: string): void {
+  db.prepare('DELETE FROM thread_mappings WHERE thread_key = ?').run(threadKey);
+}
+
+export function deleteThreadMappingsByAgentId(agentId: string): void {
+  db.prepare('DELETE FROM thread_mappings WHERE agent_id = ?').run(agentId);
+}
+
+export function loadAllThreadMappings(): Map<string, { agentId: string; workspaceJid: string }> {
+  const rows = db
+    .prepare('SELECT thread_key, agent_id, workspace_jid FROM thread_mappings')
+    .all() as Array<Record<string, unknown>>;
+  const map = new Map<string, { agentId: string; workspaceJid: string }>();
+  for (const row of rows) {
+    map.set(String(row.thread_key), {
+      agentId: String(row.agent_id),
+      workspaceJid: String(row.workspace_jid),
+    });
+  }
+  return map;
 }

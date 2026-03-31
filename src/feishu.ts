@@ -43,7 +43,7 @@ export interface ConnectOptions {
   /** 热重连时设置：丢弃 create_time 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
   ignoreMessagesBefore?: number;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null */
-  onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  onCommand?: (chatJid: string, command: string, rootId?: string) => Promise<string | null>;
   /** 根据 chatJid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (chatJid: string) => string | undefined;
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
@@ -128,6 +128,8 @@ interface IncomingMessagePayload {
   mentions?: FeishuMentionLike[];
   senderOpenId?: string;
   senderName?: string;
+  rootId?: string;        // 话题根消息 ID（thread isolation）
+  parentId?: string;      // 父消息 ID（话题内回复链）
 }
 
 interface WsConnectionState {
@@ -860,6 +862,8 @@ export function createFeishuConnection(
       chatType,
       senderOpenId = '',
       senderName,
+      rootId,
+      parentId,
     } = payload;
     if (!chatId || !messageId) return;
 
@@ -1033,7 +1037,7 @@ export function createFeishuConnection(
         'Feishu slash command detected',
       );
       try {
-        const reply = await onCommand(chatJid, cmdBody);
+        const reply = await onCommand(chatJid, cmdBody, rootId);
         logger.info(
           {
             chatJid,
@@ -1044,7 +1048,36 @@ export function createFeishuConnection(
           'Feishu slash command processed',
         );
         if (reply) {
-          await sendTextToChat(chatId, reply);
+          // /thread 命令的响应需要以话题方式发送
+          const isThreadCmd = cmdBody.startsWith('thread') && !cmdBody.startsWith('thread_mode');
+          if (isThreadCmd && !rootId) {
+            // 创建新话题: reply_in_thread
+            const lastMsg = lastMessageIdByChat.get(chatId);
+            if (lastMsg) {
+              try {
+                const res = await client.im.message.reply({
+                  path: { message_id: lastMsg },
+                  data: {
+                    content: JSON.stringify({ text: reply }),
+                    msg_type: 'text',
+                    reply_in_thread: true,
+                  },
+                });
+                // Track the thread root message for future routing
+                const threadMsgId = (res as any)?.data?.message_id;
+                if (threadMsgId) {
+                  lastMessageIdByChat.set(chatId + '::thread::' + threadMsgId, threadMsgId);
+                }
+              } catch (threadErr) {
+                logger.warn({ threadErr, chatId }, 'Failed to reply in thread, falling back');
+                await sendTextToChat(chatId, reply);
+              }
+            } else {
+              await sendTextToChat(chatId, reply);
+            }
+          } else {
+            await sendTextToChat(chatId, reply);
+          }
           return; // 已知命令，拦截
         }
         // reply 为 null 表示未知命令，继续作为普通消息处理
@@ -1418,6 +1451,8 @@ export function createFeishuConnection(
                 chatType: message.chat_type,
                 mentions: message.mentions as FeishuMentionLike[] | undefined,
                 senderOpenId: data.sender.sender_id?.open_id || '',
+                rootId: (message as any).root_id || undefined,
+                parentId: (message as any).parent_id || undefined,
               },
               'ws',
             );
