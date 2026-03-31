@@ -5403,6 +5403,21 @@ export function getThreadMappingsByImJid(imJid: string): ThreadMapping[] {
   }));
 }
 
+export function getThreadMappingByAgentId(agentId: string): ThreadMapping | undefined {
+  const row = db
+    .prepare('SELECT * FROM thread_mappings WHERE agent_id = ? LIMIT 1')
+    .get(agentId) as Record<string, unknown> | undefined;
+  if (!row) return undefined;
+  return {
+    thread_key: String(row.thread_key),
+    agent_id: String(row.agent_id),
+    workspace_jid: String(row.workspace_jid),
+    im_jid: String(row.im_jid),
+    root_message_id: typeof row.root_message_id === 'string' ? row.root_message_id : null,
+    created_at: String(row.created_at),
+  };
+}
+
 export function deleteThreadMapping(threadKey: string): void {
   db.prepare('DELETE FROM thread_mappings WHERE thread_key = ?').run(threadKey);
 }

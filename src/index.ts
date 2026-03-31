@@ -44,6 +44,7 @@ import {
   getJidsByFolder,
   getLastGroupSync,
   getRegisteredGroup,
+  getThreadMappingByAgentId,
   getUserById,
   getMessagesSince,
   getNewMessages,
@@ -88,7 +89,12 @@ import {
 } from './db.js';
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
-import { getChannelType, extractChatId } from './im-channel.js';
+import {
+  getChannelType,
+  extractChatId,
+  type IMMessageSendOptions,
+  type IMStreamingSessionOptions,
+} from './im-channel.js';
 import {
   registerStreamingSession,
   unregisterStreamingSession,
@@ -819,9 +825,10 @@ async function sendImWithRetry(
   imJid: string,
   text: string,
   localImagePaths: string[],
+  options?: IMMessageSendOptions,
 ): Promise<boolean> {
   const ok = await retryImOperation('send_message', imJid, () =>
-    imManager.sendMessage(imJid, text, localImagePaths),
+    imManager.sendMessage(imJid, text, localImagePaths, options),
   );
   if (ok) {
     imSendFailCounts.delete(imJid);
@@ -848,8 +855,9 @@ function sendImWithFailTracking(
   imJid: string,
   text: string,
   localImagePaths: string[],
+  options?: IMMessageSendOptions,
 ): void {
-  sendImWithRetry(imJid, text, localImagePaths).catch(() => {});
+  sendImWithRetry(imJid, text, localImagePaths, options).catch(() => {});
 }
 
 export function isCursorAfter(
@@ -5578,6 +5586,34 @@ async function processAgentConversation(
     activeImReplyRoutes.set(effectiveGroup.folder, replySourceImJid);
   }
 
+  let threadReplyMessageOpts: IMMessageSendOptions | undefined;
+  let threadStreamingOpts: IMStreamingSessionOptions | undefined;
+  if (replySourceImJid && getChannelType(replySourceImJid) === 'feishu') {
+    const threadMapping = getThreadMappingByAgentId(agentId);
+    if (
+      threadMapping?.im_jid === replySourceImJid &&
+      threadMapping.root_message_id
+    ) {
+      threadReplyMessageOpts = {
+        replyToMessageId: threadMapping.root_message_id,
+        replyInThread: true,
+      };
+      threadStreamingOpts = {
+        replyToMsgId: threadMapping.root_message_id,
+        replyInThread: true,
+      };
+      logger.info(
+        {
+          chatJid,
+          agentId,
+          replySourceImJid,
+          rootMessageId: threadMapping.root_message_id,
+        },
+        'Recovered Feishu thread reply context for conversation agent',
+      );
+    }
+  }
+
   // ── Feishu Streaming Card (conversation agent) ──
   // Unlike processGroupMessages which falls back to chatJid, conversation agents
   // only stream when the message originates from an IM channel (replySourceImJid).
@@ -5589,6 +5625,7 @@ async function processAgentConversation(
   let agentStreamingSession = replySourceImJid
     ? imManager.createStreamingSession(replySourceImJid, (messageId) =>
         registerMessageIdMapping(messageId, streamingSessionJid!),
+        threadStreamingOpts,
       )
     : undefined;
   let agentStreamingAccText = '';
@@ -5873,6 +5910,7 @@ async function processAgentConversation(
             replySourceImJid!,
             (messageId) =>
               registerMessageIdMapping(messageId, streamingSessionJid!),
+            threadStreamingOpts,
           );
           if (agentStreamingSession) {
             registerStreamingSession(
@@ -5893,6 +5931,7 @@ async function processAgentConversation(
             replySourceImJid,
             text,
             localImagePaths,
+            threadReplyMessageOpts,
           );
           if (imSent) {
             logger.info(
@@ -6213,6 +6252,7 @@ async function processAgentConversation(
             replySourceImJid,
             partialReply,
             localImagePaths,
+            threadReplyMessageOpts,
           );
           logger.info({ replySourceImJid, imSent }, 'agent IM reply sent');
         } else {

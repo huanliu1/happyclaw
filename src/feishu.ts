@@ -85,6 +85,7 @@ export interface FeishuConnection {
     chatId: string,
     text: string,
     localImagePaths?: string[],
+    options?: { replyToMessageId?: string; replyInThread?: boolean },
   ): Promise<void>;
   sendImage(
     chatId: string,
@@ -1668,6 +1669,7 @@ export function createFeishuConnection(
       chatId: string,
       text: string,
       localImagePaths?: string[],
+      options?: { replyToMessageId?: string; replyInThread?: boolean },
     ): Promise<void> {
       if (!client) {
         logger.warn(
@@ -1687,16 +1689,23 @@ export function createFeishuConnection(
       };
 
       try {
+        const replyTargetId =
+          options?.replyToMessageId || lastMessageIdByChat.get(chatId);
+        const replyInThread = options?.replyInThread === true;
+
         // Detect pre-built Feishu interactive card JSON — send directly without wrapping
         if (text.startsWith('{"type":"interactive"')) {
           try {
             const parsed = JSON.parse(text);
             if (parsed.type === 'interactive' && parsed.card) {
-              const lastMsgId = lastMessageIdByChat.get(chatId);
-              if (lastMsgId) {
+              if (replyTargetId) {
                 await client.im.message.reply({
-                  path: { message_id: lastMsgId },
-                  data: { content: text, msg_type: 'interactive' },
+                  path: { message_id: replyTargetId },
+                  data: {
+                    content: text,
+                    msg_type: 'interactive',
+                    reply_in_thread: replyInThread,
+                  },
                 });
               } else {
                 await client.im.v1.message.create({
@@ -1724,11 +1733,14 @@ export function createFeishuConnection(
         if (usePostMd) {
           // Too many tables for card format, go directly to post+md
           const postContent = buildPostMdFallback(text);
-          const lastMsgId = lastMessageIdByChat.get(chatId);
-          if (lastMsgId) {
+          if (replyTargetId) {
             await client.im.message.reply({
-              path: { message_id: lastMsgId },
-              data: { content: postContent, msg_type: 'post' },
+              path: { message_id: replyTargetId },
+              data: {
+                content: postContent,
+                msg_type: 'post',
+                reply_in_thread: replyInThread,
+              },
             });
           } else {
             await client.im.v1.message.create({
@@ -1744,12 +1756,15 @@ export function createFeishuConnection(
           const card = buildInteractiveCard(text);
           const content = JSON.stringify(card);
 
-          const lastMsgId = lastMessageIdByChat.get(chatId);
-          if (lastMsgId) {
+          if (replyTargetId) {
             try {
               await client.im.message.reply({
-                path: { message_id: lastMsgId },
-                data: { content, msg_type: 'interactive' },
+                path: { message_id: replyTargetId },
+                data: {
+                  content,
+                  msg_type: 'interactive',
+                  reply_in_thread: replyInThread,
+                },
               });
             } catch (err) {
               logger.warn(
@@ -1757,10 +1772,11 @@ export function createFeishuConnection(
                 'Feishu interactive reply failed, fallback to post+md',
               );
               await client.im.message.reply({
-                path: { message_id: lastMsgId },
+                path: { message_id: replyTargetId },
                 data: {
                   content: buildPostMdFallback(text),
                   msg_type: 'post',
+                  reply_in_thread: replyInThread,
                 },
               });
             }
@@ -1813,14 +1829,25 @@ export function createFeishuConnection(
               );
               continue;
             }
-            await client.im.v1.message.create({
-              params: { receive_id_type: 'chat_id' },
-              data: {
-                receive_id: chatId,
-                msg_type: 'image',
-                content: JSON.stringify({ image_key: imageKey }),
-              },
-            });
+            if (replyTargetId) {
+              await client.im.message.reply({
+                path: { message_id: replyTargetId },
+                data: {
+                  content: JSON.stringify({ image_key: imageKey }),
+                  msg_type: 'image',
+                  reply_in_thread: replyInThread,
+                },
+              });
+            } else {
+              await client.im.v1.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: {
+                  receive_id: chatId,
+                  msg_type: 'image',
+                  content: JSON.stringify({ image_key: imageKey }),
+                },
+              });
+            }
           } catch (imageErr) {
             logger.warn(
               { chatId, localImagePath, err: imageErr },

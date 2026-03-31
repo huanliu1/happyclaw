@@ -395,6 +395,19 @@ function buildVolumeMounts(
     containerPath: '/app/src',
     readonly: true,
   });
+  const agentRunnerPrompts = path.join(
+    projectRoot,
+    'container',
+    'agent-runner',
+    'prompts',
+  );
+  if (fs.existsSync(agentRunnerPrompts)) {
+    mounts.push({
+      hostPath: agentRunnerPrompts,
+      containerPath: '/app/prompts',
+      readonly: true,
+    });
+  }
 
   // Admin's ~/.claude/ config: mount CLAUDE.md and rules/ into /workspace/
   // so the SDK's directory traversal (cwd → root) discovers them at /workspace/ level.

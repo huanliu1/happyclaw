@@ -98,12 +98,27 @@ const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 
 // ── 系统提示词优化：安全守则（从独立 Markdown 文件加载，始终注入所有容器） ──
 
-const SECURITY_RULES_PATH = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
-  '..',
-  'prompts',
-  'security-rules.md',
-);
+const SECURITY_RULES_CANDIDATES = [
+  path.join(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    'prompts',
+    'security-rules.md',
+  ),
+  '/app/prompts/security-rules.md',
+  path.join(process.cwd(), 'container', 'agent-runner', 'prompts', 'security-rules.md'),
+];
+
+function resolveSecurityRulesPath(): string {
+  for (const candidate of SECURITY_RULES_CANDIDATES) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `Security rules prompt not found. Checked: ${SECURITY_RULES_CANDIDATES.join(', ')}`,
+  );
+}
+
+const SECURITY_RULES_PATH = resolveSecurityRulesPath();
 const SECURITY_RULES = fs.readFileSync(SECURITY_RULES_PATH, 'utf-8');
 
 // globalClaudeMd 截断保护：防止用户 CLAUDE.md 过大导致系统提示词膨胀

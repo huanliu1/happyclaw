@@ -69,6 +69,16 @@ export interface IMChannelConnectOpts {
   onCardInterrupt?: (chatJid: string) => void;
 }
 
+export interface IMMessageSendOptions {
+  replyToMessageId?: string;
+  replyInThread?: boolean;
+}
+
+export interface IMStreamingSessionOptions {
+  replyToMsgId?: string;
+  replyInThread?: boolean;
+}
+
 export interface IMChannel {
   readonly channelType: string;
   connect(opts: IMChannelConnectOpts): Promise<boolean>;
@@ -77,6 +87,7 @@ export interface IMChannel {
     chatId: string,
     text: string,
     localImagePaths?: string[],
+    options?: IMMessageSendOptions,
   ): Promise<void>;
   /** Send file to chat (if supported) */
   sendFile?(chatId: string, filePath: string, fileName: string): Promise<void>;
@@ -96,6 +107,7 @@ export interface IMChannel {
   createStreamingSession?(
     chatId: string,
     onCardCreated?: (messageId: string) => void,
+    options?: IMStreamingSessionOptions,
   ): StreamingCardController | undefined;
   getChatInfo?(chatId: string): Promise<{
     avatar?: string;
@@ -178,6 +190,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       chatId: string,
       text: string,
       localImagePaths?: string[],
+      options?: IMMessageSendOptions,
     ): Promise<void> {
       if (!inner) {
         logger.warn(
@@ -186,7 +199,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         );
         return;
       }
-      await inner.sendMessage(chatId, text, localImagePaths);
+      await inner.sendMessage(chatId, text, localImagePaths, options);
     },
 
     async sendImage(
@@ -248,6 +261,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
     createStreamingSession(
       chatId: string,
       onCardCreated?: (messageId: string) => void,
+      options?: IMStreamingSessionOptions,
     ): StreamingCardController | undefined {
       if (!inner) return undefined;
       const larkClient = inner.getLarkClient();
@@ -255,7 +269,8 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       const opts: StreamingCardOptions = {
         client: larkClient,
         chatId,
-        replyToMsgId: inner.getLastMessageId(chatId),
+        replyToMsgId: options?.replyToMsgId ?? inner.getLastMessageId(chatId),
+        replyInThread: options?.replyInThread ?? false,
         onCardCreated,
       };
       return new StreamingCardController(opts);

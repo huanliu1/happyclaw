@@ -8,6 +8,8 @@
 import {
   type IMChannel,
   type IMChannelConnectOpts,
+  type IMMessageSendOptions,
+  type IMStreamingSessionOptions,
   getChannelType,
   extractChatId,
   createFeishuChannel,
@@ -140,6 +142,7 @@ class IMConnectionManager {
     jid: string,
     text: string,
     localImagePaths?: string[],
+    options?: IMMessageSendOptions,
   ): Promise<void> {
     const channelType = getChannelType(jid);
     if (!channelType) {
@@ -152,7 +155,7 @@ class IMConnectionManager {
     if (!channel) {
       throw new Error(`No IM channel available for ${jid} (${channelType})`);
     }
-    await channel.sendMessage(chatId, text, localImagePaths);
+    await channel.sendMessage(chatId, text, localImagePaths, options);
   }
 
   /**
@@ -246,6 +249,7 @@ class IMConnectionManager {
   createStreamingSession(
     jid: string,
     onCardCreated?: (messageId: string) => void,
+    options?: IMStreamingSessionOptions,
   ): StreamingCardController | undefined {
     const channelType = getChannelType(jid);
     if (channelType !== 'feishu') return undefined;
@@ -253,7 +257,7 @@ class IMConnectionManager {
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
     if (channel?.createStreamingSession) {
-      return channel.createStreamingSession(chatId, onCardCreated);
+      return channel.createStreamingSession(chatId, onCardCreated, options);
     }
     return undefined;
   }
