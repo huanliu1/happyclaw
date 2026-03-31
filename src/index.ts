@@ -2350,9 +2350,22 @@ function handleThreadUnbindCommand(
   rootId: string,
 ): string {
   const threadKey = getThreadKey(chatJid, rootId);
+  const mapping = threadAgentMapping.get(threadKey);
   threadAgentMapping.delete(threadKey);
+  closedThreadKeys.add(threadKey);
   const { deleteThreadMapping: dbDelete } = require('./db.js');
   dbDelete(threadKey);
+  // Mark agent as completed so frontend removes the sub-conversation
+  try {
+    updateAgentStatus(agentId, 'completed');
+    const agent = getAgent(agentId);
+    const wsJid = mapping?.workspaceJid || '';
+    if (wsJid) {
+      broadcastAgentStatus(wsJid, agentId, 'completed', agent?.name, undefined, undefined, 'unbind');
+    }
+  } catch (err) {
+    logger.warn({ err, agentId }, 'Failed to update agent status on thread unbind');
+  }
   logger.info({ chatJid, agentId, threadKey }, 'Thread mapping removed via /unbind');
   return `已解除话题绑定。此话题后续消息将回到主对话。`;
 }
@@ -2361,6 +2374,9 @@ function handleThreadUnbindCommand(
 
 /** In-memory cache of thread → agent mappings, loaded from DB at startup */
 const threadAgentMapping = new Map<string, { agentId: string; workspaceJid: string }>();
+
+/** Thread keys that have been closed — prevents fallthrough to group binding */
+const closedThreadKeys = new Set<string>();
 
 function getThreadKey(chatJid: string, rootId?: string): string {
   return rootId ? `${chatJid}::thread::${rootId}` : chatJid;
@@ -2397,10 +2413,20 @@ async function handleThreadCommand(
       return '当前话题未绑定独立会话，无需关闭。';
     }
     const agentId = mapping.agentId;
+    const workspaceJid = mapping.workspaceJid;
     threadAgentMapping.delete(threadKey);
     threadSessionManager.remove(threadKey);
+    closedThreadKeys.add(threadKey);
     const { deleteThreadMapping: dbDelete } = require('./db.js');
     dbDelete(threadKey);
+    // Mark agent as completed so frontend removes the sub-conversation
+    try {
+      updateAgentStatus(agentId, 'completed');
+      const agent = getAgent(agentId);
+      broadcastAgentStatus(workspaceJid, agentId, 'completed', agent?.name, undefined, undefined, 'close');
+    } catch (err) {
+      logger.warn({ err, agentId }, 'Failed to update agent status on thread close');
+    }
     logger.info({ chatJid, agentId, threadKey }, 'Thread closed via /thread close');
     return `🔒 话题已关闭，后续消息将不再路由到独立会话。\n发送 /thread 可创建新话题。`;
   }
@@ -6812,6 +6838,10 @@ function buildResolveEffectiveChatJid(): (
         threadSessionManager.touch(threadKey);
         const effectiveJid = `${mapping.workspaceJid}#agent:${mapping.agentId}`;
         return { effectiveJid, agentId: mapping.agentId };
+      }
+      // Closed thread: route to main chat (return null skips group binding fallthrough)
+      if (closedThreadKeys.has(threadKey)) {
+        return null;
       }
     }
 
