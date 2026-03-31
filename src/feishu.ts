@@ -103,7 +103,7 @@ export interface FeishuConnection {
   getChatInfo(chatId: string): Promise<FeishuChatInfo | null>;
   /** Get the underlying Lark SDK client (for streaming cards) */
   getLarkClient(): lark.Client | null;
-  /** Get the last received message ID for a chat (for reply threading) */
+  /** Get the last received top-level message ID for a chat (thread replies excluded). */
   getLastMessageId(chatId: string): string | undefined;
 }
 
@@ -588,12 +588,16 @@ export function createFeishuConnection(
   const msgCache = new Map<string, number>();
   const slashCommandCache = new Map<string, number>();
   const senderNameCache = new Map<string, string>();
-  const lastMessageIdByChat = new Map<string, string>();
+  const lastTopLevelMessageIdByChat = new Map<string, string>();
+  const lastMessageIdByThread = new Map<string, string>();
   const ackReactionByChat = new Map<string, string>();
   const typingReactionByChat = new Map<string, string>();
   const knownChatIds = new Set<string>();
   const chatTypeById = new Map<string, string>(); // chatId → 'group' | 'p2p'
   const lastCreateTimeByChat = new Map<string, number>();
+
+  const getThreadContextKey = (chatId: string, rootId: string): string =>
+    `${chatId}::thread::${rootId}`;
 
   let client: lark.Client | null = null;
   let wsClient: lark.WSClient | null = null;
@@ -1054,7 +1058,11 @@ export function createFeishuConnection(
       }
     }
 
-    lastMessageIdByChat.set(chatId, messageId);
+    if (rootId) {
+      lastMessageIdByThread.set(getThreadContextKey(chatId, rootId), messageId);
+    } else {
+      lastTopLevelMessageIdByChat.set(chatId, messageId);
+    }
 
     const resolvedCreateTimeMs = createTimeMs > 0 ? createTimeMs : Date.now();
     const timestamp = new Date(resolvedCreateTimeMs).toISOString();
@@ -1095,7 +1103,7 @@ export function createFeishuConnection(
           const isThreadCmd = cmdBody.startsWith('thread') && !cmdBody.startsWith('thread_mode');
           if (isThreadCmd && !rootId && client) {
             // 创建新话题: reply_in_thread
-            const lastMsg = lastMessageIdByChat.get(chatId);
+            const lastMsg = lastTopLevelMessageIdByChat.get(chatId);
             if (lastMsg) {
               try {
                 const res = await client.im.message.reply({
@@ -1109,7 +1117,10 @@ export function createFeishuConnection(
                 // Track the thread root message for future routing
                 const threadMsgId = (res as any)?.data?.message_id;
                 if (threadMsgId) {
-                  lastMessageIdByChat.set(chatId + '::thread::' + threadMsgId, threadMsgId);
+                  lastMessageIdByThread.set(
+                    getThreadContextKey(chatId, threadMsgId),
+                    threadMsgId,
+                  );
                 }
               } catch (threadErr) {
                 logger.warn({ threadErr, chatId }, 'Failed to reply in thread, falling back');
@@ -1690,7 +1701,7 @@ export function createFeishuConnection(
 
       try {
         const replyTargetId =
-          options?.replyToMessageId || lastMessageIdByChat.get(chatId);
+          options?.replyToMessageId || lastTopLevelMessageIdByChat.get(chatId);
         const replyInThread = options?.replyInThread === true;
 
         // Detect pre-built Feishu interactive card JSON — send directly without wrapping
@@ -1905,7 +1916,7 @@ export function createFeishuConnection(
         const receive_id_type = chatId.startsWith('oc_')
           ? 'chat_id'
           : 'open_id';
-        const lastMsgId = lastMessageIdByChat.get(chatId);
+        const lastMsgId = lastTopLevelMessageIdByChat.get(chatId);
         const content = JSON.stringify({ image_key: imageKey });
 
         if (lastMsgId) {
@@ -2019,7 +2030,7 @@ export function createFeishuConnection(
 
     async sendReaction(chatId: string, isTyping: boolean): Promise<void> {
       if (!client) return;
-      const lastMsgId = lastMessageIdByChat.get(chatId);
+      const lastMsgId = lastTopLevelMessageIdByChat.get(chatId);
       if (!lastMsgId) return;
 
       if (isTyping) {
@@ -2111,7 +2122,7 @@ export function createFeishuConnection(
     },
 
     getLastMessageId(chatId: string): string | undefined {
-      return lastMessageIdByChat.get(chatId);
+      return lastTopLevelMessageIdByChat.get(chatId);
     },
   };
 
