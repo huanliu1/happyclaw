@@ -2333,7 +2333,11 @@ function handleThreadListCommand(
   const agent = getAgent(agentId);
   if (!agent) return '当前话题关联的会话已不存在';
 
-  const statusEmoji = agent.status === 'idle' ? '🟢' : agent.status === 'busy' ? '🟠' : '⚪';
+  const statusEmoji = agent.status === 'idle'
+    ? '🟢'
+    : agent.status === 'running'
+      ? '🟠'
+      : '⚪';
   const shortId = agentId.slice(0, 8);
   const wsGroup = registeredGroups[workspaceJid] ?? getRegisteredGroup(workspaceJid);
   const wsName = wsGroup?.name || findGroupNameByFolder(agent.group_folder) || agent.group_folder;
@@ -7684,8 +7688,6 @@ async function main(): Promise<void> {
           ignoreMessagesBefore: Date.now(),
           resolveGroupFolder: (chatJid) => resolveEffectiveFolder(chatJid),
           resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
-        shouldAutoThread: buildShouldAutoThread(),
-        onAutoThreadCreate: buildOnAutoThreadCreate(),
           onAgentMessage: buildOnAgentMessage(),
           onBotAddedToGroup: buildTelegramBotAddedHandler(
             adminUser.id,
@@ -7767,8 +7769,6 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
-        shouldAutoThread: buildShouldAutoThread(),
-        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
             onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
@@ -7802,8 +7802,6 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
-        shouldAutoThread: buildShouldAutoThread(),
-        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
           },
         );
@@ -7831,8 +7829,6 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
-        shouldAutoThread: buildShouldAutoThread(),
-        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
             onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
@@ -7873,8 +7869,6 @@ async function main(): Promise<void> {
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
-        shouldAutoThread: buildShouldAutoThread(),
-        onAutoThreadCreate: buildOnAutoThreadCreate(),
             onAgentMessage: buildOnAgentMessage(),
           },
         );
